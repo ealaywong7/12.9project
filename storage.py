@@ -2,7 +2,7 @@ import json
 import os
 
 # 文件路径
-DATA_DIR = "app"
+DATA_DIR = "data"
 USER_FILE = os.path.join(DATA_DIR, "users.json")
 SCORES_FILE = os.path.join(DATA_DIR, "scores.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
