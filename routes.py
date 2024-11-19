@@ -5,6 +5,11 @@ import os
 api_bp = Blueprint('api', __name__)
 DATA_PATH = "data/users.json"
 
+# 根路径访问
+@api_bp.route('/', methods=['GET'])
+def home():
+    return "Welcome to the API", 200
+
 # 加载用户数据
 def load_users():
     if os.path.exists(DATA_PATH):
