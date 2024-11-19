@@ -1,103 +1,93 @@
-from flask import Blueprint, request, jsonify
-from . import db
-from .models import Judge, Team, Score, Settings
+from flask import Blueprint, request, jsonify, session
+from .storage import read_file, write_file, SCORES_FILE, SETTINGS_FILE, USER_FILE
 
-api_bp = Blueprint('api', __name__)
+api_bp = Blueprint("api", __name__)
 
-# 1. 输入成绩
-@api_bp.route('/input-scores', methods=['POST'])
+# 1. 用户登录
+@api_bp.route("/login", methods=["POST"])
+def login():
+    data = request.get_json()
+    username = data.get("username")
+    password = data.get("password")
+
+    users = read_file(USER_FILE)["users"]
+    user = next((u for u in users if u["username"] == username and u["password"] == password), None)
+
+    if user:
+        session["username"] = username
+        return jsonify({"message": "Login successful"}), 200
+    else:
+        return jsonify({"message": "Invalid username or password"}), 401
+
+# 2. 用户登出
+@api_bp.route("/logout", methods=["POST"])
+def logout():
+    session.pop("username", None)
+    return jsonify({"message": "Logged out successfully"}), 200
+
+# 验证登录状态的装饰器
+def login_required(f):
+    def decorated_function(*args, **kwargs):
+        if "username" not in session:
+            return jsonify({"message": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+    decorated_function.__name__ = f.__name__
+    return decorated_function
+
+# 3. 输入成绩
+@api_bp.route("/input-scores", methods=["POST"])
+@login_required
 def input_scores():
     data = request.get_json()
-    judge_scores = data.get('judgeScores', [])
-    
-    for judge_score in judge_scores:
-        judge_id = judge_score['judgeId']
-        scores = judge_score['scores']
-        
-        for team_id, score in enumerate(scores, start=1):
-            existing_score = Score.query.filter_by(judge_id=judge_id, team_id=team_id).first()
-            if existing_score:
-                existing_score.score = score
-            else:
-                new_score = Score(judge_id=judge_id, team_id=team_id, score=score)
-                db.session.add(new_score)
+    scores_data = read_file(SCORES_FILE)
+    scores_data["scores"].extend(data["judgeScores"])
+    write_file(SCORES_FILE, scores_data)
+    return jsonify({"message": "Scores saved successfully"}), 200
 
-    db.session.commit()
-    return jsonify({"status": "success"}), 200
-
-# 2. 设置系统参数
-@api_bp.route('/set-settings', methods=['POST'])
+# 4. 设置系统参数
+@api_bp.route("/set-settings", methods=["POST"])
+@login_required
 def set_settings():
     data = request.get_json()
-    settings = Settings(
-        num_judges=data['numJudges'],
-        num_teams=data['numTeams'],
-        track=data['track'],
-        scoring=data['scoring'],
-        display_ratio=data['displayRatio']
-    )
-    db.session.add(settings)
-    db.session.commit()
-    return jsonify({"status": "success"}), 200
+    write_file(SETTINGS_FILE, {"settings": data})
+    return jsonify({"message": "Settings saved successfully"}), 200
 
-# 3. 获取 Dashboard 数据
-@api_bp.route('/get-dashboard-data', methods=['GET'])
+# 5. 获取系统参数
+@api_bp.route("/get-settings", methods=["GET"])
+@login_required
+def get_settings():
+    settings_data = read_file(SETTINGS_FILE)
+    return jsonify(settings_data["settings"]), 200
+
+# 6. 获取成绩
+@api_bp.route("/get-scores", methods=["GET"])
+@login_required
+def get_scores():
+    scores_data = read_file(SCORES_FILE)
+    return jsonify(scores_data["scores"]), 200
+
+# 7. 获取 Dashboard 数据
+@api_bp.route("/get-dashboard-data", methods=["GET"])
+@login_required
 def get_dashboard_data():
-    settings = db.session.query(Settings).first()
-    if settings:
-        return jsonify({
-            "numTeams": settings.num_teams,
-            "numJudges": settings.num_judges,
-            "track": settings.track
-        }), 200
-    else:
-        return jsonify({"message": "Settings not found"}), 404
-
-# 4. 获取 Input 界面数据
-@api_bp.route('/get-input-data', methods=['GET'])
-def get_input_data():
-    judges = db.session.query(Judge).all()
-    teams = db.session.query(Team).all()
-    scores = [[] for _ in range(len(judges))]  # 每个评委的成绩数组
+    settings_data = read_file(SETTINGS_FILE).get("settings", {})
     return jsonify({
-        "judges": [{"id": judge.id, "name": judge.name} for judge in judges],
-        "teams": [{"id": team.id, "name": team.name} for team in teams],
+        "numTeams": settings_data.get("numTeams", 0),
+        "numJudges": settings_data.get("numJudges", 0),
+        "track": settings_data.get("track", ""),
+    }), 200
+
+# 8. 获取 Input 界面数据
+@api_bp.route("/get-input-data", methods=["GET"])
+@login_required
+def get_input_data():
+    judges = [{"id": idx + 1, "name": f"Judge {idx + 1}"} for idx in range(5)]  # 示例数据
+    teams = [{"id": idx + 1, "name": f"Team {idx + 1}"} for idx in range(10)]  # 示例数据
+    scores = [[] for _ in range(len(judges))]  # 每个评委的成绩数组
+
+    return jsonify({
+        "judges": judges,
+        "teams": teams,
         "scores": scores,
         "selectedJudge": 1  # 默认选择第一个评委
     }), 200
-
-# 5. 获取查询成绩
-@api_bp.route('/get-scores', methods=['GET'])
-def get_scores():
-    teams = db.session.query(Team).all()
-    result = []
-    
-    for team in teams:
-        scores = {}
-        for judge_id in range(1, 6):  # 假设最多5个评委
-            score = db.session.query(Score).filter_by(team_id=team.id, judge_id=judge_id).first()
-            if score:
-                scores[judge_id] = score.score
-            else:
-                scores[judge_id] = None  # 如果没有评分则返回 None
-        result.append({
-            "id": team.id,
-            "scores": scores
-        })
-    
-    return jsonify({"teams": result}), 200
-
-# 6. 获取系统设置
-@api_bp.route('/get-settings', methods=['GET'])
-def get_settings():
-    settings = db.session.query(Settings).first()
-    if settings:
-        return jsonify({
-            "numJudges": settings.num_judges,
-            "numTeams": settings.num_teams,
-            "track": settings.track,
-            "scoring": settings.scoring,
-            "displayRatio": settings.display_ratio
-        }), 200
-    else:
-        return jsonify({"message": "Settings not found"}), 404
